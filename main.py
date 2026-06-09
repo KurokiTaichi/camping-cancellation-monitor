@@ -101,14 +101,25 @@ class ReservationChecker:
 
     @classmethod
     def get_page_for_month(cls, month: int) -> str:
-        """特定月のページを取得"""
+        """特定月のページを取得（POST で月を指定）"""
         try:
             year = 2026
-            url = f"{RESERVE_URL}&month={month}&year={year}"
             logger.info(f"{month}月のページを取得中...")
-            response = cls.session.get(url, timeout=10)
+
+            # POST リクエストで月を指定
+            response = cls.session.post(
+                RESERVE_URL,
+                data={
+                    "site": 1,
+                    "year": year,
+                    "month": month,
+                    "mode": ""
+                },
+                timeout=10
+            )
 
             if response.status_code == 200:
+                logger.info(f"{month}月のページを取得成功")
                 return response.text
             else:
                 logger.error(f"{month}月のページ取得失敗: Status {response.status_code}")
