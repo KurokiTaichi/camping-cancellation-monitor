@@ -235,34 +235,20 @@ class ReservationChecker:
 
                 row_tds = target_row.find_all('td')
 
-                # その月の対象日付をチェック
-                all_tds = soup.find_all('td')
+                # プレミアムカントリーキャビン行のセルをチェック
+                # 最初のセルは施設名なので、スキップして2番目以降を1日から順番にカウント
+                month_name = f"{month}月"
 
-                for day in target_days:
-                    # 該当する日付のセルを見つける（日付を含む<td>）
-                    column_index = None
+                for day_index, cell in enumerate(row_tds[1:], start=1):
+                    # セルの順番が日付に対応（1番目=1日、2番目=2日...）
+                    day = day_index
 
-                    for idx, td in enumerate(all_tds):
-                        text = td.get_text(strip=True)
-                        if text == str(day):
-                            column_index = idx
-                            break
-
-                    if column_index is None:
-                        logger.debug(f"{month}月{day}日: セルが見つかりません")
+                    # 監視対象の日付か確認
+                    if day not in target_days:
                         continue
 
-                    # 該当セルを取得
-                    if column_index >= len(row_tds):
-                        logger.debug(f"{month}月{day}日: 列インデックスが範囲外")
-                        continue
-
-                    cell = row_tds[column_index]
                     cell_text = cell.get_text(strip=True)
-                    has_x = '×' in cell_text
-                    is_available = not has_x
-
-                    month_name = f"{month}月"
+                    is_available = '×' not in cell_text
 
                     # 状態を保存
                     month_key = str(month)
