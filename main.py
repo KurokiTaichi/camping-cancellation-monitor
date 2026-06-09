@@ -82,13 +82,13 @@ class ReservationChecker:
             return None
 
     @classmethod
-    def check_july_17(cls, email: str, passwd: str) -> bool:
+    def check_multiple_dates(cls, email: str, passwd: str) -> list:
         """
-        7月17日のプレミアムカントリーキャビン枠をチェック
+        複数日付のプレミアムカントリーキャビン枠をチェック
+        7月17日、7月18-31日、8月1-30日
 
         Returns:
-            True: キャンセル可能（「×」がない）
-            False: 予約済み（「×」がある）
+            キャンセル可能な日付のリスト [('7月', 17), ('7月', 18), ...]
         """
         try:
             # ページ取得
@@ -97,32 +97,23 @@ class ReservationChecker:
             if page_html is None:
                 logger.warning("ログイン状態が切れた可能性があります。再ログイン中...")
                 if not cls.login(email, passwd):
-                    return False
+                    return []
                 page_html = cls.get_page()
                 if page_html is None:
                     logger.error("再ログイン後もページ取得に失敗")
-                    return False
+                    return []
 
             # HTML解析
             soup = BeautifulSoup(page_html, 'html.parser')
 
-            # 1. 7月17日の列位置を見つける（bgcolor="#FBD964" かつテキスト="17"）
-            july_17_column_index = None
-            all_tds = soup.find_all('td')
+            # 監視対象日付（日付, 月, 背景色）
+            target_dates = [
+                (17, '7月', '#FBD964'),
+                *[(d, '7月', '#FFA093') for d in range(18, 32)],  # 7/18-31
+                *[(d, '8月', '#FFA093') for d in range(1, 31)],   # 8/1-30
+            ]
 
-            for idx, td in enumerate(all_tds):
-                if td.get('bgcolor') == '#FBD964':
-                    text = td.get_text(strip=True)
-                    if text == '17':
-                        july_17_column_index = idx
-                        logger.info(f"7月17日を見つけました（列インデックス: {july_17_column_index}）")
-                        break
-
-            if july_17_column_index is None:
-                logger.error("7月17日が見つかりません")
-                return False
-
-            # 2. 「プレミアムカントリーキャビン」の行を見つける
+            # 「プレミアムカントリーキャビン」の行を見つける
             rows = soup.find_all('tr')
             target_row = None
 
@@ -139,32 +130,49 @@ class ReservationChecker:
 
             if not target_row:
                 logger.error("プレミアムカントリーキャビンの行が見つかりません")
-                return False
+                return []
 
-            # 3. プレミアムカントリーキャビン行から7月17日に対応するセルを取得
             row_tds = target_row.find_all('td')
 
-            if july_17_column_index >= len(row_tds):
-                logger.error("列インデックスが範囲外です")
-                return False
+            # 各日付をチェック
+            available_dates = []
+            all_tds = soup.find_all('td')
 
-            july_17_cell = row_tds[july_17_column_index]
-            logger.info(f"プレミアムカントリーキャビン 7月17日のセルを特定しました")
+            for day, month, bgcolor in target_dates:
+                # 該当する日付のセルを見つける
+                column_index = None
 
-            # 4. 「×」の有無を判定
-            cell_text = july_17_cell.get_text(strip=True)
-            has_x = '×' in cell_text
+                for idx, td in enumerate(all_tds):
+                    if td.get('bgcolor') == bgcolor:
+                        text = td.get_text(strip=True)
+                        if text == str(day):
+                            column_index = idx
+                            break
 
-            if has_x:
-                logger.info("7月17日プレミアムカントリーキャビン: 予約済み（×あり）")
-            else:
-                logger.info("7月17日プレミアムカントリーキャビン: キャンセル可能（×なし）")
+                if column_index is None:
+                    logger.warning(f"{month}{day}日のセルが見つかりません")
+                    continue
 
-            return not has_x
+                # 該当セルを取得
+                if column_index >= len(row_tds):
+                    logger.warning(f"{month}{day}日: 列インデックスが範囲外")
+                    continue
+
+                cell = row_tds[column_index]
+                cell_text = cell.get_text(strip=True)
+                has_x = '×' in cell_text
+
+                if not has_x:
+                    available_dates.append((month, day))
+                    logger.info(f"✅ {month}{day}日: キャンセル可能（×なし）")
+                else:
+                    logger.info(f"❌ {month}{day}日: 予約済み（×あり）")
+
+            return available_dates
 
         except Exception as e:
             logger.error(f"チェック処理エラー: {e}")
-            return False
+            return []
 
 
 def send_line_notification(line_token: str, line_user_id: str, message: str) -> bool:
@@ -232,25 +240,28 @@ def main():
             logger.error("初回ログインに失敗しました")
             return 1
 
-        # 予約ページをチェック
-        is_available = ReservationChecker.check_july_17(cc_email, cc_passwd)
+        # 複数日付をチェック
+        available_dates = ReservationChecker.check_multiple_dates(cc_email, cc_passwd)
 
-        # キャンセル可能なら通知
-        if is_available:
-            message = """🎉 キャンセル検知！
+        # キャンセル可能な日付があれば通知
+        if available_dates:
+            # 日付をフォーマット
+            date_str = "、".join([f"{month}{day}日" for month, day in available_dates])
+
+            message = f"""🎉 キャンセル検知！
 
 【予約内容】
-📅 日付: 2026年7月17日（金）
+📅 日付: {date_str}
 🏕️ 施設: プレミアムカントリーキャビン
 📍 場所: キャンプアンドキャビンズ山中湖
 
 予約可能になりました！"""
 
-            logger.info("LINE 通知を送信中...")
+            logger.info(f"LINE 通知を送信中... ({len(available_dates)}件)")
             send_line_notification(line_token, line_user_id, message)
             logger.info("処理完了（キャンセル検知）")
         else:
-            logger.info("処理完了（予約済み）")
+            logger.info("処理完了（該当するキャンセルなし）")
 
         return 0
 
