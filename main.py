@@ -82,91 +82,143 @@ class ReservationChecker:
             return None
 
     @classmethod
+    def get_month_from_page(cls, page_html: str) -> int:
+        """ページから現在の月を抽出（2026年8月 → 8）"""
+        soup = BeautifulSoup(page_html, 'html.parser')
+        month_span = soup.find('span', style=lambda s: s and '#660000' in s)
+
+        if not month_span:
+            return None
+
+        text = month_span.get_text(strip=True)  # "2026年8月" など
+        if '年' in text:
+            month_text = text.split('年')[1]  # "8月" を抽出
+            if '月' in month_text:
+                month_num = int(month_text.replace('月', '').strip())
+                return month_num
+
+        return None
+
+    @classmethod
+    def get_page_for_month(cls, month: int) -> str:
+        """特定月のページを取得"""
+        try:
+            year = 2026
+            url = f"{RESERVE_URL}&month={month}&year={year}"
+            logger.info(f"{month}月のページを取得中...")
+            response = cls.session.get(url, timeout=10)
+
+            if response.status_code == 200:
+                return response.text
+            else:
+                logger.error(f"{month}月のページ取得失敗: Status {response.status_code}")
+                return None
+        except Exception as e:
+            logger.error(f"{month}月のページ取得エラー: {e}")
+            return None
+
+    @classmethod
     def check_multiple_dates(cls, email: str, passwd: str) -> list:
         """
-        複数日付のプレミアムカントリーキャビン枠をチェック
-        7月17日、7月18-31日、8月1-30日
+        複数月にわたる日付のプレミアムカントリーキャビン枠をチェック
+        7月17日～8月30日を監視
 
         Returns:
-            キャンセル可能な日付のリスト [('7月', 17), ('7月', 18), ...]
+            キャンセル可能な日付のリスト [('7月', 17), ('8月', 5), ...]
         """
         try:
-            # ページ取得
-            page_html = cls.get_page()
+            # 監視対象（月: [日付リスト]）
+            target_by_month = {
+                7: [17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31],
+                8: list(range(1, 31)),  # 1-30日
+            }
 
-            if page_html is None:
-                logger.warning("ログイン状態が切れた可能性があります。再ログイン中...")
-                if not cls.login(email, passwd):
-                    return []
-                page_html = cls.get_page()
-                if page_html is None:
-                    logger.error("再ログイン後もページ取得に失敗")
-                    return []
-
-            # HTML解析
-            soup = BeautifulSoup(page_html, 'html.parser')
-
-            # 監視対象日付（日付, 月, 背景色）
-            target_dates = [
-                (17, '7月', '#FBD964'),
-                *[(d, '7月', '#FFA093') for d in range(18, 32)],  # 7/18-31
-                *[(d, '8月', '#FFA093') for d in range(1, 31)],   # 8/1-30
-            ]
-
-            # 「プレミアムカントリーキャビン」の行を見つける
-            rows = soup.find_all('tr')
-            target_row = None
-
-            for row in rows:
-                tds = row.find_all('td')
-                if tds:
-                    for td in tds:
-                        if 'プレミアムカントリーキャビン' in td.get_text():
-                            target_row = row
-                            logger.info("プレミアムカントリーキャビンの行を見つけました")
-                            break
-                    if target_row:
-                        break
-
-            if not target_row:
-                logger.error("プレミアムカントリーキャビンの行が見つかりません")
-                return []
-
-            row_tds = target_row.find_all('td')
-
-            # 各日付をチェック
             available_dates = []
-            all_tds = soup.find_all('td')
 
-            for day, month, bgcolor in target_dates:
-                # 該当する日付のセルを見つける
-                column_index = None
+            # 各月ごとにページを取得してチェック
+            for month, target_days in target_by_month.items():
+                logger.info(f"━━━ {month}月のチェック開始 ━━━")
 
-                for idx, td in enumerate(all_tds):
-                    if td.get('bgcolor') == bgcolor:
+                # 月のページを取得
+                page_html = cls.get_page_for_month(month)
+
+                if page_html is None:
+                    logger.warning(f"{month}月のページ取得失敗。再ログイン中...")
+                    if not cls.login(email, passwd):
+                        logger.error(f"{month}月: 再ログイン失敗")
+                        continue
+                    page_html = cls.get_page_for_month(month)
+                    if page_html is None:
+                        logger.error(f"{month}月: 再ログイン後もページ取得失敗")
+                        continue
+
+                # HTML解析
+                soup = BeautifulSoup(page_html, 'html.parser')
+
+                # ページから現在の月を抽出して確認
+                current_month = cls.get_month_from_page(page_html)
+                if current_month is None:
+                    logger.error(f"{month}月: ページから月情報を抽出できません")
+                    continue
+
+                if current_month != month:
+                    logger.error(f"{month}月: 月の不一致（期待={month}, 実際={current_month}）")
+                    continue
+
+                logger.info(f"✅ ページから {current_month}月 を確認")
+
+                # 「プレミアムカントリーキャビン」の行を見つける
+                rows = soup.find_all('tr')
+                target_row = None
+
+                for row in rows:
+                    tds = row.find_all('td')
+                    if tds:
+                        for td in tds:
+                            if 'プレミアムカントリーキャビン' in td.get_text():
+                                target_row = row
+                                break
+                        if target_row:
+                            break
+
+                if not target_row:
+                    logger.warning(f"{month}月: プレミアムカントリーキャビンの行が見つかりません")
+                    continue
+
+                row_tds = target_row.find_all('td')
+
+                # その月の対象日付をチェック
+                all_tds = soup.find_all('td')
+
+                for day in target_days:
+                    # 該当する日付のセルを見つける（日付を含む<td>）
+                    column_index = None
+
+                    for idx, td in enumerate(all_tds):
                         text = td.get_text(strip=True)
                         if text == str(day):
                             column_index = idx
                             break
 
-                if column_index is None:
-                    logger.warning(f"{month}{day}日のセルが見つかりません")
-                    continue
+                    if column_index is None:
+                        logger.debug(f"{month}月{day}日: セルが見つかりません")
+                        continue
 
-                # 該当セルを取得
-                if column_index >= len(row_tds):
-                    logger.warning(f"{month}{day}日: 列インデックスが範囲外")
-                    continue
+                    # 該当セルを取得
+                    if column_index >= len(row_tds):
+                        logger.debug(f"{month}月{day}日: 列インデックスが範囲外")
+                        continue
 
-                cell = row_tds[column_index]
-                cell_text = cell.get_text(strip=True)
-                has_x = '×' in cell_text
+                    cell = row_tds[column_index]
+                    cell_text = cell.get_text(strip=True)
+                    has_x = '×' in cell_text
 
-                if not has_x:
-                    available_dates.append((month, day))
-                    logger.info(f"✅ {month}{day}日: キャンセル可能（×なし）")
-                else:
-                    logger.info(f"❌ {month}{day}日: 予約済み（×あり）")
+                    month_name = f"{month}月"
+                    if not has_x:
+                        available_dates.append((month_name, day))
+                        logger.info(f"✅ {month_name}{day}日: キャンセル可能（×なし）")
+                    else:
+                        logger.debug(f"❌ {month_name}{day}日: 予約済み（×あり）")
 
             return available_dates
 
