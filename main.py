@@ -2,6 +2,7 @@ import os
 import sys
 import logging
 import requests
+import json
 from bs4 import BeautifulSoup
 from google.cloud import secretmanager
 from datetime import datetime
@@ -28,6 +29,37 @@ def get_secret(secret_id: str) -> str:
     except Exception as e:
         logger.error(f"Failed to get secret '{secret_id}': {e}")
         raise
+
+
+def get_previous_state() -> dict:
+    """前回のチェック状態を取得"""
+    try:
+        state_json = get_secret("previous-check-state")
+        return json.loads(state_json) if state_json else {}
+    except Exception as e:
+        logger.warning(f"前回の状態取得失敗（初回実行の可能性）: {e}")
+        return {}
+
+
+def save_current_state(state: dict) -> bool:
+    """現在のチェック状態を保存"""
+    try:
+        from google.cloud import secretmanager
+        client = secretmanager.SecretManagerServiceClient()
+        secret_name = f"projects/{PROJECT_ID}/secrets/previous-check-state"
+
+        state_json = json.dumps(state)
+        client.add_secret_version(
+            request={
+                "parent": secret_name,
+                "payload": {"data": state_json.encode("UTF-8")}
+            }
+        )
+        logger.info("状態を保存しました")
+        return True
+    except Exception as e:
+        logger.error(f"状態保存エラー: {e}")
+        return False
 
 
 class ReservationChecker:
@@ -138,13 +170,18 @@ class ReservationChecker:
             キャンセル可能な日付のリスト [('7月', 17), ('8月', 5), ...]
         """
         try:
+            # 前回の状態を取得
+            previous_state = get_previous_state()
+            current_state = {}
+
             # 監視対象（月: [日付リスト]）
             target_by_month = {
                 7: [17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31],
                 8: list(range(1, 31)),  # 1-30日
             }
 
-            available_dates = []
+            available_dates = []  # 今回キャンセル可能な日付
+            newly_available = []   # 新たにキャンセル可能になった日付（通知対象）
 
             # 各月ごとにページを取得してチェック
             for month, target_days in target_by_month.items():
@@ -223,15 +260,33 @@ class ReservationChecker:
                     cell = row_tds[column_index]
                     cell_text = cell.get_text(strip=True)
                     has_x = '×' in cell_text
+                    is_available = not has_x
 
                     month_name = f"{month}月"
-                    if not has_x:
-                        available_dates.append((month_name, day))
-                        logger.info(f"✅ {month_name}{day}日: キャンセル可能（×なし）")
-                    else:
-                        logger.debug(f"❌ {month_name}{day}日: 予約済み（×あり）")
 
-            return available_dates
+                    # 状態を保存
+                    month_key = str(month)
+                    if month_key not in current_state:
+                        current_state[month_key] = {}
+                    current_state[month_key][str(day)] = is_available
+
+                    # 前回の状態を取得
+                    prev_state = previous_state.get(month_key, {}).get(str(day), False)
+
+                    # 「予約済み → キャンセル可能」に変わった場合のみ通知対象に追加
+                    if not prev_state and is_available:  # False → True
+                        newly_available.append((month_name, day))
+                        logger.info(f"🎉 {month_name}{day}日: 新たにキャンセル可能！")
+                    elif is_available:
+                        logger.debug(f"✅ {month_name}{day}日: キャンセル可能（既知）")
+                    else:
+                        logger.debug(f"❌ {month_name}{day}日: 予約済み")
+
+            # 現在の状態を保存
+            save_current_state(current_state)
+
+            # 新たにキャンセル可能になった日付のみを返す（通知対象）
+            return newly_available
 
         except Exception as e:
             logger.error(f"チェック処理エラー: {e}")
