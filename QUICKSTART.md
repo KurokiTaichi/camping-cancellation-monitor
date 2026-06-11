@@ -85,7 +85,7 @@ done
 SERVICE_URL="https://camping-cancellation-monitor-xyz.run.app"
 
 gcloud scheduler jobs create http camping-cancellation-monitor \
-  --schedule="*/5 * * * *" \
+  --schedule="*/15 * * * *" \
   --uri="$SERVICE_URL" \
   --http-method=POST \
   --oidc-service-account-email=$SA_EMAIL \

@@ -98,11 +98,11 @@ gcloud secrets add-iam-policy-binding line-user-id \
 
 ### 6. Cloud Scheduler で定期実行を設定
 
-5分間隔で Cloud Run を実行するスケジューラーを作成します。
+15分間隔で Cloud Run を実行するスケジューラーを作成します。
 
 ```bash
 gcloud scheduler jobs create http camping-cancellation-monitor \
-  --schedule="*/5 * * * *" \
+  --schedule="*/15 * * * *" \
   --uri="https://camping-cancellation-monitor-xyz.run.app" \
   --http-method=POST \
   --oidc-service-account-email=$SA_EMAIL \
@@ -113,7 +113,8 @@ gcloud scheduler jobs create http camping-cancellation-monitor \
 
 **注意**: 
 - `https://camping-cancellation-monitor-xyz.run.app` を、実際の Cloud Run Service URL に置き換えてください
-- スケジュール `*/5 * * * *` は 5分間隔を意味します（毎分の場合は `*/1 * * * *`）
+- スケジュール `*/15 * * * *` は 15分間隔を意味します
+- キャンセル検知の遅延は最大 15分です
 
 ---
 
